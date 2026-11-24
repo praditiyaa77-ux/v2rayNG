@@ -1,0 +1,93 @@
+name: Build Emy Proxy
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Rebrand ke Emy Proxy
+        run: |
+          pip install pillow
+          python3 - <<'PY'
+          import glob, os, re
+          from PIL import Image
+
+          root = "V2rayNG/app"
+
+          # 1. applicationId
+          p = root + "/build.gradle.kts"
+          s = open(p, encoding="utf-8").read()
+          n = re.sub(r'applicationId\s*=\s*"com\.v2ray\.ang"', 'applicationId = "com.emy.proxy"', s)
+          print("applicationId diganti:", n != s)
+          open(p, "w", encoding="utf-8").write(n)
+
+          # 2. nama aplikasi (semua bahasa)
+          cnt = 0
+          for f in glob.glob(root + "/src/**/res/values*/strings.xml", recursive=True):
+              t = open(f, encoding="utf-8").read()
+              r = re.sub(r'(<string name="app_name"[^>]*>)[^<]*(</string>)', r'\1Emy Proxy\2', t)
+              if r != t:
+                  open(f, "w", encoding="utf-8").write(r)
+                  cnt += 1
+          print("app_name diganti di", cnt, "file")
+
+          # 3. ikon launcher
+          pat = re.compile(r'^ic_launcher(_round)?\.(png|webp|xml)$')
+          for f in glob.glob(root + "/src/**/res/mipmap*/*", recursive=True):
+              if pat.match(os.path.basename(f)):
+                  os.remove(f)
+          logo = Image.open("emy-logo.png").convert("RGBA")
+          for d, px in {"mdpi": 48, "hdpi": 72, "xhdpi": 96, "xxhdpi": 144, "xxxhdpi": 192}.items():
+              out = root + "/src/main/res/mipmap-" + d
+              os.makedirs(out, exist_ok=True)
+              img = logo.resize((px, px), Image.LANCZOS)
+              img.save(out + "/ic_launcher.png")
+              img.save(out + "/ic_launcher_round.png")
+          print("ikon diganti")
+          PY
+
+      - name: Siapkan NDK
+        run: |
+          NDK=28.2.13676358
+          SDKM=$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager
+          yes | $SDKM --licenses > /dev/null || true
+          $SDKM --install "ndk;$NDK" || true
+          if [ -d "$ANDROID_HOME/ndk/$NDK" ]; then
+            echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK" >> $GITHUB_ENV
+          fi
+
+      - name: Build hev-socks5-tunnel
+        run: bash compile-hevtun.sh
+
+      - name: Unduh libv2ray.aar
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p V2rayNG/app/libs
+          gh release download v26.11.9 --repo 2dust/AndroidLibXrayLite --pattern '*.aar' --dir V2rayNG/app/libs
+          ls -la V2rayNG/app/libs
+
+      - name: Build APK
+        run: |
+          cd V2rayNG
+          chmod +x gradlew
+          ./gradlew assemblePlaystoreDebug --no-daemon
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd V2rayNG/app/build/outputs/apk/playstore/debug
+          ls -la
+          gh release create "emy-${{ github.run_number }}" *.apk --repo "${{ github.repository }}" --title "Emy Proxy ${{ github.run_number }}" --notes "Fork v2rayNG (GPL-3.0), rebrand Emy Proxy"
